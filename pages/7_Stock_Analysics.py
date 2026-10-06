@@ -1,0 +1,634 @@
+
+
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+
+import logging
+import os
+
+from datetime import datetime
+
+import pages.utils.stock_utils as stock_utils
+
+# ==========================================================
+# LOGGER SETUP
+# ==========================================================
+
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+
+log_filename = (
+    f"logs/stock_dashboard_"
+    f"{datetime.now().strftime('%Y%m%d')}.log"
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        logging.FileHandler(log_filename),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+logger.info("Application Started")
+
+# ==========================================================
+# PAGE CONFIG
+# ==========================================================
+
+st.set_page_config(
+    page_title="Stock Analysis Dashboard",
+    page_icon="📈",
+    layout="wide"
+)
+
+# ==========================================================
+# TITLE
+# ==========================================================
+
+st.title("📈 Stock Analysis Dashboard")
+
+# ==========================================================
+# USER INPUT
+# ==========================================================
+
+def main():
+
+    # ==========================================================
+    # INPUT
+    # ==========================================================
+
+    ticker_input = st.text_input(
+        "Enter NSE Stock Ticker",
+        value="TATATECH.NS"
+    )
+
+    logger.info(f"User entered ticker: {ticker_input}")
+
+    if not ticker_input:
+        return
+
+    # ==========================================================
+    # STEP 1: DATA FETCHING / DATA PREPARATION
+    # ==========================================================
+
+    try:
+        logger.info(f"Fetching stock data for: {ticker_input}")
+
+        # ------------------------------------------------------
+        # Company information
+        # ------------------------------------------------------
+
+        info = stock_utils.get_company_info(ticker_input)
+
+        # ------------------------------------------------------
+        # Screener information
+        # ------------------------------------------------------
+
+        screener_symbol = stock_utils.clean_symbol(ticker_input)
+
+        url = stock_utils.screener_company_url(
+            screener_symbol
+        )
+
+        # ------------------------------------------------------
+        # Financial data
+        # ------------------------------------------------------
+
+        df_year, df_quarter = stock_utils.get_financials(
+            screener_symbol
+        )
+
+        # ------------------------------------------------------
+        # Financial calculations
+        # ------------------------------------------------------
+
+        df_growth = stock_utils.calculate_growth_and_margins(
+            df_year
+        )
+
+        revenue_metric = stock_utils.get_revenue_metric_name(
+            df_year
+        )
+
+        quarterly_revenue_metric = (
+            stock_utils.get_revenue_metric_name(df_quarter)
+        )
+
+        # ------------------------------------------------------
+        # Prepare yearly summary
+        # ------------------------------------------------------
+
+        df_summary = pd.DataFrame()
+
+        if not df_year.empty:
+            df_summary = df_year.set_index("Years").T
+            df_summary.index.name = "Metrics"
+
+        # ------------------------------------------------------
+        # Prepare quarterly summary
+        # ------------------------------------------------------
+
+        df_quarter_summary = pd.DataFrame()
+
+        if not df_quarter.empty:
+            df_quarter_summary = df_quarter.set_index(
+                "Particulars"
+            ).T
+
+            df_quarter_summary.index.name = "Year"
+
+        # ------------------------------------------------------
+        # Financial summary JSON
+        # ------------------------------------------------------
+
+        financial_summary = stock_utils.build_financial_summary(
+            df_year,
+            df_quarter
+        )
+
+        # ------------------------------------------------------
+        # Logging
+        # ------------------------------------------------------
+
+        logger.info(f"Yearly dataframe:\n{df_year}")
+
+        logger.info(
+            "##############################################################"
+        )
+
+        logger.info(
+            f"Quarterly dataframe:\n{df_quarter}"
+        )
+
+        logger.info(f"Growth dataframe:\n{df_growth}")
+
+        # ------------------------------------------------------
+        # Data availability warnings
+        # ------------------------------------------------------
+
+        if df_year.empty:
+            logger.warning(
+                "Yearly financial data unavailable (rows=%s)",
+                len(df_year)
+            )
+
+        if df_quarter.empty:
+            logger.warning(
+                "Quarterly financial data unavailable (rows=%s)",
+                len(df_quarter)
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            f"Error while fetching data for {ticker_input}"
+        )
+
+        st.error(
+            f"Error fetching stock data: {e}"
+        )
+
+        # Stop execution.
+        # UI should not try to use incomplete data.
+        return
+
+    # ==========================================================
+    # STEP 2: UI / PRESENTATION
+    # ==========================================================
+
+    try:
+
+        # ======================================================
+        # COMPANY HEADER
+        # ======================================================
+
+        company_name = info.get(
+            "company_name",
+            "Unknown Company"
+        )
+
+        st.header(f"🏢 {company_name}")
+
+        # ======================================================
+        # BASIC METRICS
+        # ======================================================
+
+        col1, col2, col3 = st.columns(3)
+
+        # Uncomment if required
+
+        # col1.metric(
+        #     "Current Price",
+        #     info.get("current_price")
+        # )
+
+        # col2.metric(
+        #     "52W High",
+        #     info.get("fifty_two_high")
+        # )
+
+        # col3.metric(
+        #     "52W Low",
+        #     info.get("fifty_two_low")
+        # )
+
+        # ======================================================
+        # SCREENER LINK
+        # ======================================================
+
+        st.markdown("### 🔗 Screener Link")
+
+        st.write(url)
+
+        # ======================================================
+        # DATA AVAILABILITY
+        # ======================================================
+
+        if df_year.empty:
+            st.error(
+                "Yearly financial data not available."
+            )
+
+        if df_quarter.empty:
+            st.warning(
+                "Quarterly financial data not available "
+                "for this company."
+            )
+
+        # ======================================================
+        # YEARLY SECTION
+        # ======================================================
+
+        if not df_year.empty:
+
+            st.subheader(
+                "📊 Financial Trend Analysis"
+            )
+
+            st.markdown(
+                "### Year-Wise Financial Trend"
+            )
+
+            # --------------------------------------------------
+            # Revenue availability
+            # --------------------------------------------------
+
+            if revenue_metric is None:
+
+                st.warning(
+                    "Revenue row not reported for this company."
+                )
+
+            else:
+
+                # --------------------------------------------------
+                # Chart options
+                # --------------------------------------------------
+
+                chart_options = [
+                    "Gross Revenue",
+                    "Net Profit"
+                ]
+
+                if not df_growth.empty:
+                    chart_options.append(
+                        "Revenue Growth %"
+                    )
+
+                chart_option = st.selectbox(
+                    "Select Chart",
+                    chart_options
+                )
+
+                fig = None
+
+                # --------------------------------------------------
+                # Revenue chart
+                # --------------------------------------------------
+
+                if chart_option == "Gross Revenue":
+
+                    fig = px.line(
+                        df_summary,
+                        x=df_summary.index,
+                        y=revenue_metric,
+                        markers=True,
+                        title="Gross Revenue Trend",
+                        color_discrete_sequence=["yellow"],
+                        text=revenue_metric
+                    )
+
+                # --------------------------------------------------
+                # Net Profit chart
+                # --------------------------------------------------
+
+                elif chart_option == "Net Profit":
+
+                    fig = px.line(
+                        df_summary,
+                        x=df_summary.index,
+                        y="Net Profit",
+                        markers=True,
+                        title="Net Profit Trend",
+                        color_discrete_sequence=["yellow"],
+                        text="Net Profit"
+                    )
+
+                # --------------------------------------------------
+                # Revenue Growth chart
+                # --------------------------------------------------
+
+                elif chart_option == "Revenue Growth %":
+
+                    growth_df = df_growth.dropna(
+                        subset=["Revenue Growth %"]
+                    )
+
+                    if growth_df.empty:
+
+                        st.info(
+                            "Not enough periods to calculate growth."
+                        )
+
+                    else:
+
+                        fig = px.bar(
+                            growth_df,
+                            x="Period",
+                            y="Revenue Growth %",
+                            title="Revenue Growth %",
+                            color_discrete_sequence=["yellow"],
+                            text="Revenue Growth %"
+                        )
+
+                        avg_growth = (
+                            growth_df["Revenue Growth %"]
+                            .mean()
+                        )
+
+                        if pd.notna(avg_growth):
+
+                            fig.add_hline(
+                                y=avg_growth,
+                                line_dash="dash",
+                                line_color="red",
+                                annotation_text=(
+                                    f"Avg {avg_growth:.2f}%"
+                                ),
+                                annotation_position="top left",
+                                annotation_font_color="red"
+                            )
+
+                # --------------------------------------------------
+                # Display chart
+                # --------------------------------------------------
+
+                if fig is not None:
+
+                    fig.update_layout(
+                        height=600,
+                        xaxis_title="Year",
+                        yaxis_title=chart_option
+                    )
+
+                    st.plotly_chart(
+                        fig,
+                        width="stretch"
+                    )
+
+            # ==================================================
+            # PROFIT MARGINS
+            # ==================================================
+
+            if not df_growth.empty:
+
+                st.subheader(
+                    "Operating Profit & Net Profit Margin %"
+                )
+
+                # --------------------------------------------------
+                # Find available margin columns
+                # --------------------------------------------------
+
+                margin_columns = [
+                    column
+                    for column in (
+                        "Operating Profit Margin %",
+                        "Net Profit Margin %"
+                    )
+                    if (
+                        column in df_growth.columns
+                        and df_growth[column].notna().any()
+                    )
+                ]
+
+                # --------------------------------------------------
+                # Prepare chart dataframe
+                # --------------------------------------------------
+
+                chart_df = (
+                    df_growth.dropna(
+                        subset=margin_columns,
+                        how="all"
+                    )
+                    if margin_columns
+                    else pd.DataFrame()
+                )
+
+                # --------------------------------------------------
+                # Margin chart
+                # --------------------------------------------------
+
+                if (
+                    margin_columns
+                    and not chart_df.empty
+                ):
+
+                    growth_fig = px.bar(
+                        chart_df,
+                        x="Period",
+                        y=margin_columns,
+                        barmode="group",
+                        title=(
+                            "Operating Profit & "
+                            "Net Profit Margin %"
+                        ),
+                        color_discrete_sequence=[
+                            "yellow",
+                            "green"
+                        ],
+                        labels={
+                            "value": "Percent (%)",
+                            "variable": "Metric",
+                            "Period": "Year"
+                        }
+                    )
+
+                    growth_fig.update_traces(
+                        texttemplate="%{y:.2f}%",
+                        textposition="outside",
+                        textfont=dict(size=11),
+                        marker_line=dict(
+                            width=0.5,
+                            color="black"
+                        )
+                    )
+
+                    growth_fig.update_layout(
+                        height=600,
+                        xaxis_title="Year",
+                        yaxis_title="Percent (%)",
+                        legend_title_text="Metric",
+                        bargap=0.15,
+                        bargroupgap=0.05
+                    )
+
+                    st.plotly_chart(
+                        growth_fig,
+                        width="stretch"
+                    )
+
+                elif not margin_columns:
+
+                    st.info(
+                        "Operating profit margin not "
+                        "reported for this company."
+                    )
+
+        # ======================================================
+        # QUARTERLY SECTION
+        # ======================================================
+
+        if not df_quarter.empty:
+
+            st.subheader(
+                "Quarter-Wise Financial Trend"
+            )
+
+            # --------------------------------------------------
+            # Revenue availability
+            # --------------------------------------------------
+
+            if quarterly_revenue_metric is None:
+
+                st.warning(
+                    "Revenue row not reported for this company."
+                )
+
+            else:
+
+                chart_options_quarter = [
+                    "Gross Revenue",
+                    "Net Profit"
+                ]
+
+                chart_option_quarter = st.selectbox(
+                    "Select Chart",
+                    chart_options_quarter,
+                    key="Quarter_Chart"
+                )
+
+                fig_quarter = None
+
+                # --------------------------------------------------
+                # Revenue
+                # --------------------------------------------------
+
+                if chart_option_quarter == "Gross Revenue":
+
+                    fig_quarter = px.line(
+                        df_quarter_summary,
+                        x=df_quarter_summary.index,
+                        y=quarterly_revenue_metric,
+                        markers=True,
+                        title="Gross Revenue Trend",
+                        color_discrete_sequence=["yellow"],
+                        text=quarterly_revenue_metric
+                    )
+
+                # --------------------------------------------------
+                # Net Profit
+                # --------------------------------------------------
+
+                elif chart_option_quarter == "Net Profit":
+
+                    fig_quarter = px.line(
+                        df_quarter_summary,
+                        x=df_quarter_summary.index,
+                        y="Net Profit",
+                        markers=True,
+                        title="Net Profit Trend",
+                        color_discrete_sequence=["yellow"],
+                        text="Net Profit"
+                    )
+
+                # --------------------------------------------------
+                # Display chart
+                # --------------------------------------------------
+
+                if fig_quarter is not None:
+
+                    fig_quarter.update_traces(
+                        mode="lines+markers+text",
+                        textposition="top center",
+                        textfont=dict(size=11)
+                    )
+
+                    fig_quarter.update_layout(
+                        height=600,
+                        xaxis_title="Quarter",
+                        yaxis_title=chart_option_quarter
+                    )
+
+                    st.plotly_chart(
+                        fig_quarter,
+                        width="stretch"
+                    )
+
+        # ======================================================
+        # FINANCIAL SUMMARY JSON
+        # ======================================================
+
+        with st.expander(
+            "Financial Summary JSON",
+            expanded=False
+        ):
+
+            st.json(
+                financial_summary,
+                expanded=False
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            f"Error while rendering UI for {ticker_input}"
+        )
+
+        st.error(
+            f"Error displaying stock information: {e}"
+        )
+
+
+if __name__ == "__main__":
+    main()
+
+    
+# ==========================================================
+# FOOTER
+# ==========================================================
+
+st.markdown("---")
+
+st.caption(
+    "Built Using Streamlit + Yahoo Finance"
+)
+
+logger.info(f"Application Finished \n \n{'#'*50}")
+

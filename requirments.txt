@@ -1,0 +1,9 @@
+yfinance
+pandas
+numpy
+Streamlit
+mplfinance
+pillow
+plotly
+beautifulsoup4
+lxml
