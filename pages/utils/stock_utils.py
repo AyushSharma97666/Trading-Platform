@@ -4,6 +4,9 @@ import logging
 import time
 import requests
 from bs4 import BeautifulSoup
+import json
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +15,8 @@ logger = logging.getLogger(__name__)
 # ==========================================================
 
 SCREENER_BASE_URL = "https://www.screener.in/company"
+
+SCREENER_API_BASE_URL = "https://www.screener.in/api/company"
 
 SCREENER_HEADERS = {
     "User-Agent": (
@@ -24,6 +29,11 @@ SCREENER_HEADERS = {
 SCREENER_TIMEOUT = 20
 SCREENER_MAX_RETRIES = 3
 SCREENER_RETRY_BACKOFF = 1.5
+
+# Company pages are much larger than this, while the peers table is a small
+# HTML fragment that is checked with SCREENER_MIN_FRAGMENT_LENGTH instead
+SCREENER_MIN_PAGE_LENGTH = 5000
+SCREENER_MIN_FRAGMENT_LENGTH = 500
 
 # Reused across calls so keep-alive connections are not rebuilt every rerun
 _session = None
@@ -68,11 +78,11 @@ def reset_session() -> None:
     _session = None
 
 
-def _request_page(url: str):
+def _request_page(url: str, min_length: int = SCREENER_MIN_PAGE_LENGTH):
     """GET a Screener page with retries, returning the response or None.
 
     Screener intermittently answers 200 with a truncated body, so a response
-    is only accepted when it actually looks like a company page.
+    is only accepted when its body is at least min_length characters long.
     """
     last_status = None
 
@@ -93,7 +103,7 @@ def _request_page(url: str):
             continue
 
         # a truncated body still returns 200, so sanity check the markup
-        if len(response.text) < 5000:
+        if len(response.text) < min_length:
             logger.warning("Attempt %s/%s for %s returned a truncated body", attempt, SCREENER_MAX_RETRIES, url)
             time.sleep(SCREENER_RETRY_BACKOFF * attempt)
             continue
@@ -139,6 +149,137 @@ def get_financials_page(ticker: str, consolidated: bool = False):
             return fallback
 
     return soup
+
+
+# ==========================================================
+# PEER COMPARISON
+# ==========================================================
+
+
+def get_company_warehouse_id(soup) -> str | None:
+    """Return Screener's warehouse id from a company page.
+
+    The peers table is served from a separate API endpoint keyed by this id.
+    """
+    if soup is None:
+        return None
+
+    company_info = soup.find(id="company-info")
+
+    if company_info is None:
+        logger.warning("No company-info element on the page")
+        return None
+
+    warehouse_id = company_info.get("data-warehouse-id")
+
+    return warehouse_id or None
+
+
+def fetch_peers_page(warehouse_id: str | None):
+    """GET the peers table fragment for a warehouse id.
+
+    Returns None when the fragment cannot be loaded.
+    """
+    if not warehouse_id:
+        return None
+
+    url = f"{SCREENER_API_BASE_URL}/{warehouse_id}/peers/"
+
+    response = _request_page(url, min_length=SCREENER_MIN_FRAGMENT_LENGTH)
+
+    if response is None:
+        return None
+
+    return BeautifulSoup(response.text, "lxml")
+
+
+def symbol_from_company_url(href) -> str | None:
+    """Return the Screener symbol from a company link.
+
+    '/company/LTTS/consolidated/' -> 'LTTS'
+    '/company/TATATECH/'          -> 'TATATECH'
+    """
+    if not href:
+        return None
+
+    parts = [part for part in str(href).split("/") if part]
+
+    if len(parts) < 2 or parts[0] != "company" or not parts[1]:
+        return None
+
+    return parts[1].upper()
+
+
+def extract_peer_symbols(soup) -> list[str]:
+    """Return the company symbols listed in a peers table.
+
+    Accepts either a company page or the peers table fragment. Only links
+    inside the table are read, so the benchmark links that sit in the same
+    section are ignored. Returns an empty list when no table is present.
+    """
+    if soup is None:
+        return []
+
+    section = soup.find("section", {"id": "peers"})
+    table = section.find("table") if section is not None else soup.find("table")
+
+    if table is None:
+        logger.warning("No peers table found")
+        return []
+
+    symbols = []
+
+    for link in table.select('a[href^="/company/"]'):
+        symbol = symbol_from_company_url(link.get("href"))
+
+        if symbol is not None and symbol not in symbols:
+            symbols.append(symbol)
+
+    return symbols
+
+
+def get_peer_symbols(ticker: str, soup=None) -> list[str]:
+    """Return the peer symbols of a company as shown on Screener.
+
+    The company page only holds a placeholder for the peers table, so the
+    table is fetched from the API it points at. The company itself is part
+    of its own peers table and is dropped from the result.
+    """
+    if soup is None:
+        soup = fetch_screener_page(ticker)
+
+    warehouse_id = get_company_warehouse_id(soup)
+    peers_page = fetch_peers_page(warehouse_id)
+    symbols = extract_peer_symbols(peers_page)
+
+    if not symbols:
+        logger.warning("No peer symbols found for %s", ticker)
+        return []
+
+    own_symbol = clean_symbol(ticker)
+
+    return [symbol for symbol in symbols if symbol != own_symbol]
+
+
+def build_peer_financial_summaries(symbols: list[str]) -> dict:
+    """Build the financial summary JSON for every peer symbol.
+
+    A peer that cannot be fetched is stored under an 'error' key so one bad
+    company does not drop the rest of the table.
+    """
+    summaries = {}
+
+    for symbol in symbols:
+        try:
+            logger.info("Building peer financial summary for %s", symbol)
+
+            df_year, df_quarter = get_financials(symbol)
+            summaries[symbol] = build_financial_summary(df_year, df_quarter)
+        except Exception as e:
+            logger.warning("Could not build peer summary for %s: %s", symbol, e)
+            summaries[symbol] = {"error": str(e)}
+
+    return summaries
 
 
 def parse_screener_table(soup, section_id: str, label: str):
@@ -675,8 +816,121 @@ def get_financials(stock):
         df_year = df_year.drop(columns=["TTM"])
 
     df_quarter = parse_screener_table(soup, "quarters", "Particulars")
-
     return df_year, df_quarter
+
+
+# ==========================================================
+# SCREENER COMPANY INFO
+# ==========================================================
+
+
+def _remove_citations(node) -> None:
+    """Drop the [1] citation links Screener appends to sourced text."""
+    if node is None:
+        return
+
+    for sup in node.find_all("sup"):
+        if sup.find("a") is not None:
+            sup.decompose()
+
+
+def _find_section_content(soup, title: str):
+    """Return the content div that follows a titled block on the page.
+
+    Screener renders About and Key Points as a 'div.title' heading followed
+    by its content in the next sibling div. Returns None when the heading
+    is missing.
+    """
+    if soup is None:
+        return None
+
+    heading = next(
+        (
+            div
+            for div in soup.find_all("div", class_="title")
+            if div.get_text(" ", strip=True).lower() == title.lower()
+        ),
+        None,
+    )
+
+    if heading is None:
+        return None
+
+    return heading.find_next_sibling("div")
+
+
+def extract_screener_company_info(symbol: str, soup=None) -> dict | None:
+    """Return the About text and Key Points of a company from Screener.
+
+    Pass soup to reuse an already fetched page instead of requesting again.
+
+    Returns None when the page cannot be loaded. Sections that are missing
+    come back as empty values so the result can still be rendered.
+    """
+    symbol = clean_symbol(symbol)
+
+    if soup is None:
+        soup = fetch_screener_page(symbol)
+
+    if soup is None:
+        logger.warning("Could not load the Screener page for %s", symbol)
+        return None
+
+    heading = soup.find("h1")
+    company_name = heading.get_text(" ", strip=True) if heading else symbol
+
+    # ------------------------------------------------------
+    # About
+    # ------------------------------------------------------
+
+    about = ""
+    about_block = _find_section_content(soup, "About")
+
+    if about_block is None:
+        logger.warning("No About section on the page for %s", symbol)
+    else:
+        _remove_citations(about_block)
+        about = about_block.get_text(" ", strip=True)
+
+    # ------------------------------------------------------
+    # Key Points
+    # ------------------------------------------------------
+
+    key_points = []
+    key_points_block = _find_section_content(soup, "Key Points")
+
+    if key_points_block is None:
+        logger.warning("No Key Points section on the page for %s", symbol)
+    else:
+        _remove_citations(key_points_block)
+
+        for paragraph in key_points_block.find_all("p"):
+            strong = paragraph.find("strong")
+            point_title = strong.get_text(" ", strip=True) if strong else ""
+            point_text = paragraph.get_text(" ", strip=True)
+
+            # the title repeats at the start of the paragraph, so only the
+            # remainder is kept as the description
+            if point_title and point_text.startswith(point_title):
+                description = point_text[len(point_title):].strip()
+            else:
+                description = point_text
+
+            key_points.append({
+                "title": point_title,
+                "description": description,
+            })
+
+    # ------------------------------------------------------
+    # Final JSON structure
+    # ------------------------------------------------------
+
+    return {
+        "symbol": symbol,
+        "company_name": company_name,
+        "about": about,
+        "key_points": key_points,
+    }
 
 
 # # ==========================================================

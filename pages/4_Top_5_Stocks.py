@@ -170,9 +170,9 @@ def main(index_name, folder_path, time_now, per_change_day):
                     print(f'errror : {e}')
                 # data_stocks = stock_data_chart_Creation(stock_ticker=f'{stock_symbol}.NS')
         
-        top5Stocks = top5Stocks[top5Stocks['pChange'] >= per_change_day]
-        # Adding volumne indication to dataframe
-        top5Stocks['Volume_Indication'] = volumne_indication
+        # top5Stocks = top5Stocks[top5Stocks['pChange'] >= per_change_day]
+        # # Adding volumne indication to dataframe
+        # top5Stocks['Volume_Indication'] = volumne_indication
 
         # Top 5 stocks to show on screen
         return top5Stocks

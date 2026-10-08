@@ -97,6 +97,16 @@ def main():
         )
 
         # ------------------------------------------------------
+        # Screener company information
+        # ------------------------------------------------------
+
+        screener_info = (
+            stock_utils.extract_screener_company_info(
+                screener_symbol
+            )
+        )
+
+        # ------------------------------------------------------
         # Financial data
         # ------------------------------------------------------
 
@@ -144,6 +154,24 @@ def main():
             df_quarter_summary.index.name = "Year"
 
         # ------------------------------------------------------
+        # Peer comparison
+        # ------------------------------------------------------
+
+        logger.info(f"Fetching peers for: {screener_symbol}")
+
+        with st.spinner("Fetching peer companies..."):
+
+            peer_symbols = stock_utils.get_peer_symbols(
+                screener_symbol
+            )
+
+            peer_summaries = (
+                stock_utils.build_peer_financial_summaries(
+                    peer_symbols
+                )
+            )
+
+        # ------------------------------------------------------
         # Financial summary JSON
         # ------------------------------------------------------
 
@@ -167,6 +195,12 @@ def main():
         )
 
         logger.info(f"Growth dataframe:\n{df_growth}")
+
+        logger.info(f"Peer symbols: {peer_symbols}")
+
+        logger.info(
+            f"Company info loaded: {screener_info is not None}"
+        )
 
         # ------------------------------------------------------
         # Data availability warnings
@@ -592,6 +626,56 @@ def main():
                     )
 
         # ======================================================
+        # PEER COMPARISON
+        # ======================================================
+
+        st.subheader("Peer Comparison")
+
+        if peer_summaries:
+
+            peer_df = (
+                pd.DataFrame(peer_summaries)
+                .T.reset_index(names="Symbol")
+            )
+
+            peer_columns = [
+                "Symbol",
+                "Revenue_Trend",
+                "Net_Profit_Trend",
+                "Avg_Revenue_Growth_Per",
+                "Avg_Operating_Margin",
+                "Avg_Net_Profit_Margin",
+                "error"
+            ]
+
+            peer_columns = [
+                column
+                for column in peer_columns
+                if column in peer_df.columns
+            ]
+
+            st.dataframe(
+                data=peer_df[peer_columns],
+                hide_index=True
+            )
+
+            with st.expander(
+                "Peer Financial Summary JSON",
+                expanded=False
+            ):
+
+                st.json(
+                    peer_summaries,
+                    expanded=False
+                )
+
+        else:
+
+            st.info(
+                "No peer companies found for this stock."
+            )
+
+        # ======================================================
         # FINANCIAL SUMMARY JSON
         # ======================================================
 
@@ -604,6 +688,86 @@ def main():
                 financial_summary,
                 expanded=False
             )
+
+        # ======================================================
+        # SCREENER COMPANY INFORMATION
+        # ======================================================
+
+        with st.expander(
+            "Company Information",
+            expanded=False
+        ):
+
+            if not screener_info:
+
+                st.info(
+                    "Company information not available."
+                )
+
+            else:
+
+                st.markdown(
+                    f"**{screener_info['company_name']}** "
+                    f"({screener_info['symbol']})"
+                )
+
+                # --------------------------------------------------
+                # About
+                # --------------------------------------------------
+
+                if screener_info["about"]:
+
+                    st.markdown("#### About")
+
+                    st.write(
+                        screener_info["about"]
+                    )
+
+                # --------------------------------------------------
+                # Key Points
+                # --------------------------------------------------
+
+                if screener_info["key_points"]:
+                    logger.info(screener_info["key_points"])
+
+                    st.markdown("#### Key Points")
+
+                    for number, point in enumerate(
+                        screener_info["key_points"],
+                        start=1
+                    ):
+
+                        title = point.get("title", "")
+                        description = point.get(
+                            "description",
+                            ""
+                        )
+
+                        if title:
+                            st.markdown(
+                                f"**{number}. {title}**"
+                            )
+                        else:
+                            st.markdown(
+                                f"**{number}.**"
+                            )
+
+                        if description:
+                            st.write(description)
+
+                # --------------------------------------------------
+                # Nothing found on the page
+                # --------------------------------------------------
+
+                if (
+                    not screener_info["about"]
+                    and not screener_info["key_points"]
+                ):
+
+                    st.info(
+                        "No About or Key Points text "
+                        "found for this company."
+                    )
 
     except Exception as e:
 
