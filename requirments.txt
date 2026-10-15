@@ -7,3 +7,7 @@ pillow
 plotly
 beautifulsoup4
 lxml
+
+# for result_calendar_data file 
+playwright
+openpyxl

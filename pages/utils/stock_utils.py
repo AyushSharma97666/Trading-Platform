@@ -608,10 +608,16 @@ def calculate_growth_and_margins(df_year):
 
     df.index.name = "Period"
 
-    df["Revenue Growth"] = df["Revenue"].diff().round(2)
-    df["Revenue Growth %"] = (df["Revenue"].pct_change() * 100).round(2)
-
+    # A zero (or missing) revenue period would make pct_change return inf,
+    # which then poisons any average. Treat zeros as missing first.
     safe_sales = df["Revenue"].replace(0, float("nan"))
+
+    df["Revenue Growth"] = df["Revenue"].diff().round(2)
+    df["Revenue Growth %"] = (safe_sales.pct_change() * 100).round(2)
+    df["Revenue Growth %"] = df["Revenue Growth %"].replace(
+        [float("inf"), float("-inf")], float("nan")
+    )
+
     df["Net Profit Margin %"] = (df["Net Profit"] / safe_sales * 100).round(2)
 
     return df.reset_index()
@@ -705,7 +711,9 @@ def _mean_or_none(series):
     if series is None:
         return None
 
-    cleaned = pd.to_numeric(pd.Series(series), errors="coerce").dropna()
+    cleaned = pd.to_numeric(pd.Series(series), errors="coerce").replace(
+        [float("inf"), float("-inf")], float("nan")
+    ).dropna()
 
     if cleaned.empty:
         return None

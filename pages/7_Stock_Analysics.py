@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 import logging
+import math
 import os
 
 from datetime import datetime
@@ -669,10 +670,173 @@ def main():
                     expanded=False
                 )
 
-        else:
+        # ======================================================
+        # PEER VS COMPANY COMPARISON
+        # ======================================================
 
-            st.info(
-                "No peer companies found for this stock."
+        def _fmt_pct(value):
+            """Format a percentage value for display."""
+            if value is None:
+                return "N/A"
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return "N/A"
+            if pd.isna(value) or not math.isfinite(value):
+                return "N/A"
+            return f"{value:.2f}%"
+
+        def _peer_avg(peer_data, key):
+            """Average of a metric across peers, excluding failed lookups."""
+            values = []
+            for summary in peer_data.values():
+                if not isinstance(summary, dict) or summary.get("error"):
+                    continue
+                value = summary.get(key)
+                if value is None:
+                    continue
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(value):
+                    continue
+                values.append(value)
+            if not values:
+                return None
+            return sum(values) / len(values)
+
+        def _peer_avg_last3(peer_data, key):
+            """Average the last-3-year values stored per peer.
+
+            Keys like 'Last_3_years_Growth_Per' hold a period -> value dict,
+            so every peer's values are pooled before averaging.
+            """
+            values = []
+            for summary in peer_data.values():
+                if not isinstance(summary, dict) or summary.get("error"):
+                    continue
+                series = summary.get(key)
+                if not isinstance(series, dict):
+                    continue
+                for value in series.values():
+                    try:
+                        value = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if pd.isna(value) or not math.isfinite(value):
+                        continue
+                    values.append(value)
+            if not values:
+                return None
+            return sum(values) / len(values)
+
+        def _delta(company_value, peer_value):
+            """Difference (percentage points) between company and peer average."""
+            if company_value is None or peer_value is None:
+                return "N/A"
+            try:
+                diff = float(company_value) - float(peer_value)
+            except (TypeError, ValueError):
+                return "N/A"
+            if pd.isna(diff) or not math.isfinite(diff):
+                return "N/A"
+            return f"{diff:+.2f} pp"
+
+        # Company values (last 3 years)
+        company_rev_growth = None
+        if not df_growth.empty and "Revenue Growth %" in df_growth.columns:
+            recent = df_growth["Revenue Growth %"].dropna().tail(3)
+            if not recent.empty:
+                company_rev_growth = float(recent.mean())
+
+        company_opm = None
+        if not df_growth.empty and "Operating Profit Margin %" in df_growth.columns:
+            recent = df_growth["Operating Profit Margin %"].dropna().tail(3)
+            if not recent.empty:
+                company_opm = float(recent.mean())
+
+        company_npm = None
+        if not df_growth.empty and "Net Profit Margin %" in df_growth.columns:
+            recent = df_growth["Net Profit Margin %"].dropna().tail(3)
+            if not recent.empty:
+                company_npm = float(recent.mean())
+
+        # 3 year net profit growth for the company
+        company_np_growth_3y = None
+        if not df_growth.empty and "Net Profit" in df_growth.columns:
+            np_growth = df_growth["Net Profit"].pct_change() * 100
+            recent_np_growth = np_growth.dropna().tail(3)
+            if not recent_np_growth.empty:
+                company_np_growth_3y = float(recent_np_growth.mean())
+
+        # Peer averages (last 3 years, matching the company metric)
+        peer_rev_growth = _peer_avg_last3(peer_summaries, "Last_3_years_Growth_Per")
+        peer_opm = _peer_avg_last3(peer_summaries, "Last_3_Years_Operating_Margin")
+        peer_npm = _peer_avg_last3(peer_summaries, "Last_3_Years_Net_Profit_Margin")
+
+        comparison_rows = [
+            {
+                "Metric": "Revenue Trend",
+                "Company": financial_summary.get("Revenue_Trend") or "N/A",
+                "Peers (Avg)": "-",
+                "Comparison": "-",
+            },
+            {
+                "Metric": "Net Profit Trend",
+                "Company": financial_summary.get("Net_Profit_Trend") or "N/A",
+                "Peers (Avg)": "-",
+                "Comparison": "-",
+            },
+            {
+                "Metric": "3 Years Revenue Growth",
+                "Company": _fmt_pct(company_rev_growth),
+                "Peers (Avg)": _fmt_pct(peer_rev_growth),
+                "Comparison": _delta(company_rev_growth, peer_rev_growth),
+            },
+            {
+                "Metric": "3 Year Net Profit Growth",
+                "Company": _fmt_pct(company_np_growth_3y),
+                "Peers (Avg)": "-",
+                "Comparison": "-",
+            },
+            {
+                "Metric": "3 Years Average Operating Profit Margin",
+                "Company": _fmt_pct(company_opm),
+                "Peers (Avg)": _fmt_pct(peer_opm),
+                "Comparison": _delta(company_opm, peer_opm),
+            },
+            {
+                "Metric": "3 Years Net Profit Margin",
+                "Company": _fmt_pct(company_npm),
+                "Peers (Avg)": _fmt_pct(peer_npm),
+                "Comparison": _delta(company_npm, peer_npm),
+            },
+            {
+                "Metric": "3 Years Revenue Growth Compared to peers Revenue Growth %",
+                "Company": _fmt_pct(company_rev_growth),
+                "Peers (Avg)": _fmt_pct(peer_rev_growth),
+                "Comparison": _delta(company_rev_growth, peer_rev_growth),
+            },
+            {
+                "Metric": "3 Year Avg Operating Margin compared to Peers Operating Margin",
+                "Company": _fmt_pct(company_opm),
+                "Peers (Avg)": _fmt_pct(peer_opm),
+                "Comparison": _delta(company_opm, peer_opm),
+            },
+            {
+                "Metric": "3 Years Avg Profit Margin compared to Peers Net Profit Margin",
+                "Company": _fmt_pct(company_npm),
+                "Peers (Avg)": _fmt_pct(peer_npm),
+                "Comparison": _delta(company_npm, peer_npm),
+            },
+        ]
+
+        with st.expander("Peer vs Company Comparison", expanded=False):
+            st.dataframe(
+                pd.DataFrame(comparison_rows),
+                hide_index=True,
+                use_container_width=True,
             )
 
         # ======================================================
